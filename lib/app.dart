@@ -1,9 +1,13 @@
-import 'package:auth_repo/auth_repo.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_login/auth/auth.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+
+import 'package:flutter_login/auth/auth.dart';
+import 'package:flutter_login/home/home.dart';
+import 'package:flutter_login/login/login.dart';
 import 'package:flutter_login/splash/splash.dart';
+import 'package:auth_repo/auth_repo.dart';
 import 'package:user_repo/user_repo.dart';
+
 
 class App extends StatelessWidget {
   const App({super.key});
@@ -44,6 +48,7 @@ class _AppViewState extends State<AppView> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       navigatorKey: _navigatorKey,
       builder: (context, child) {
         return BlocListener<AuthenticationBloc, AuthenticationState>(

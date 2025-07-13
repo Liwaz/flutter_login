@@ -145,7 +145,7 @@ The **LoginPage** is reponsible for exposing the Route as well as creating and p
 ### Login Form (view/login_form.dart)
 **LoginForm** handles notifying the *LoginBloc* of user events and also responds to state changes using *BlocBuilder* and *BlocListner*.
 
-**BlockListner** used to show *SnackBar* if the login submission fails. In addition, context.select is used to efficiently access specific parts of the *LoginState* for each widget, preventing unnecessary rebuilds. The onChanged callback is used to notify the LoginBloc of changes to the username/password.
+**BlockListner** is used to show a *SnackBar* if the login submission fails. In addition, *context.select* is used to efficiently access specific parts of the *LoginState* for each widget, preventing unnecessary rebuilds. The onChanged callback is used to notify the LoginBloc of changes to the username/password.
 
 
 
