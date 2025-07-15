@@ -1,8 +1,15 @@
 # Strapi Backend Implementation Guide
 
-This document outlines the steps to integrate the Flutter application with a Strapi backend, including user registration and proper state management using the existing BLoC pattern.
+This document outlines the steps to integrate the Flutter application with a Strapi backend, including user registration, secure token storage, and proper state management using the existing BLoC pattern.
 
-## 1. Additional Libraries Needed
+## 1. Data Persistence Strategy
+
+When handling data in a Flutter application, it's crucial to distinguish between sensitive information and general user preferences. This project adopts the following strategy:
+
+*   **`flutter_secure_storage`**: For all sensitive data, such as authentication tokens (JWT). This plugin utilizes platform-native secure storage mechanisms like Keychain on iOS and Keystore on Android, providing a secure place to store credentials.
+*   **`shared_preferences`**: For non-sensitive, simple key-value data, such as user preferences (e.g., theme settings, language choice). This data is not guaranteed to be encrypted and should not be used for storing secrets.
+
+## 2. Additional Libraries Needed
 
 Add the following to your `pubspec.yaml` file:
 
@@ -12,10 +19,11 @@ dependencies:
     sdk: flutter
   http: ^1.2.1
   flutter_dotenv: ^5.1.0
-  shared_preferences: ^2.2.3 # Or flutter_secure_storage
+  flutter_secure_storage: ^9.1.1 # For secure storage of tokens (iOS Keychain, Android Keystore)
+  shared_preferences: ^2.2.3 # For non-sensitive user preferences (e.g., theme)
 ```
 
-## 2. Strapi Backend Configuration
+## 3. Strapi Backend Configuration
 
 Configure Strapi's **Users & Permissions** plugin.
 
@@ -39,7 +47,7 @@ Configure Strapi's **Users & Permissions** plugin.
     *   **Login:** `POST /api/auth/local`
     *   **Get Logged-in User:** `GET /api/users/me`
 
-## 3. Flutter Implementation Steps
+## 4. Flutter Implementation Steps
 
 ### a. Load Environment Variables
 
@@ -57,29 +65,47 @@ Future<void> main() async {
 
 ### b. Update the User Model
 
-Update `packages/user_repo/lib/src/models/user.dart` to include all necessary fields.
+Update `packages/user_repo/lib/src/models/user.dart` to include all necessary fields from your Strapi user collection. For example, if your collection has custom fields like `fullName` or `profilePictureUrl`, add them to the `User` class and the `fromJson` factory.
 
 ```dart
 // packages/user_repo/lib/src/models/user.dart
 import 'package:equatable/equatable.dart';
 
 class User extends Equatable {
-  const User(this.id, {this.username, this.email});
+  const User({
+    required this.id,
+    required this.documentId,
+    this.firstName,
+    this.lastName,
+    this.email,
+    this.profilePic,
+  });
 
   final String id;
-  final String? username;
+  final String documentId;
+  final String? firstName;
+  final String? lastName;
   final String? email;
+  final String? profilePic;
 
   @override
-  List<Object?> get props => [id, username, email];
+  List<Object?> get props =>
+      [id, documentId, firstName, lastName, email, profilePic];
 
-  static const empty = User('-');
+  static const empty = User(id: '-', documentId: '-');
 
   factory User.fromJson(Map<String, dynamic> json) {
+    // Strapi can return profilePic as null or as an object with a url
+    final profilePicData = json['profilePic'];
+    final profilePicUrl = profilePicData is Map ? profilePicData['url'] : null;
+
     return User(
-      json['id'].toString(),
-      username: json['username'],
+      id: json['id'].toString(),
+      documentId: json['documentId'] ?? json['id'].toString(), // Fallback for documentId
+      firstName: json['firstName'],
+      lastName: json['lastName'],
       email: json['email'],
+      profilePic: profilePicUrl,
     );
   }
 }
@@ -87,17 +113,18 @@ class User extends Equatable {
 
 ### c. Create an API Service
 
-Create a service at `lib/services/api_service.dart` to handle Strapi communication.
+Create a service at `lib/services/api_service.dart` to handle Strapi communication. This service will use `flutter_secure_storage` to persist the JWT.
 
 ```dart
 // lib/services/api_service.dart
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class ApiService {
-  final String _baseUrl = "https://tronngarage.com/strapi/api";
+  final String _baseUrl = dotenv.env['STRAPI_URL'] ?? 'http://localhost:1337/api';
+  final _storage = const FlutterSecureStorage();
 
   // User Login
   Future<Map<String, dynamic>> login(String identifier, String password) async {
@@ -109,8 +136,7 @@ class ApiService {
 
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('jwt', data['jwt']);
+      await _storage.write(key: 'jwt', value: data['jwt']);
       return data;
     } else {
       throw Exception('Failed to log in');
@@ -118,77 +144,91 @@ class ApiService {
   }
 
   // User Registration
-  Future<Map<String, dynamic>> register(String username, String email, String password) async {
+  Future<Map<String, dynamic>> register(
+      String username, String email, String password) async {
     final response = await http.post(
       Uri.parse('$_baseUrl/auth/local/register'),
       headers: {'Content-Type': 'application/json'},
-      body: json.encode({'username': username, 'email': email, 'password': password}),
+      body: json.encode({
+        'username': username,
+        'email': email,
+        'password': password,
+      }),
     );
 
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('jwt', data['jwt']);
+      await _storage.write(key: 'jwt', value: data['jwt']);
       return data;
     } else {
       throw Exception('Failed to register');
     }
+  }
+
+  Future<void> logout() async {
+    await _storage.delete(key: 'jwt');
+  }
+
+  Future<String?> getToken() async {
+    return await _storage.read(key: 'jwt');
   }
 }
 ```
 
 ### d. Integrate API Service with AuthenticationRepository
 
-Modify `packages/auth_repo/lib/src/auth_repo.dart` to use the `ApiService`.
+Modify `packages/auth_repo/lib/src/auth_repo.dart` to use the `ApiService` and clear the token from secure storage on logout.
 
 ```dart
 // packages/auth_repo/lib/src/auth_repo.dart
 import 'dart:async';
+import 'package:flutter_login/services/api_service.dart';
 import 'package:user_repo/user_repo.dart';
-import 'package:flutter_login/services/api_service.dart'; // Adjust import
-import 'package:shared_preferences/shared_preferences.dart';
+
+enum AuthenticationStatus { unknown, authenticated, unauthenticated }
 
 class AuthenticationRepository {
-  final _controller = StreamController<AuthenticationStatus>();
-  final ApiService _apiService;
-  User? _user;
+  AuthenticationRepository({required this.apiService});
 
-  AuthenticationRepository({required ApiService apiService}) : _apiService = apiService;
+  final ApiService apiService;
+  final _controller = StreamController<AuthenticationStatus>();
 
   Stream<AuthenticationStatus> get status async* {
     yield AuthenticationStatus.unauthenticated;
     yield* _controller.stream;
   }
 
-  Future<void> logIn({required String username, required String password}) async {
+  Future<void> logIn({
+    required String username,
+    required String password,
+  }) async {
     try {
-      final response = await _apiService.login(username, password);
-      _user = User.fromJson(response['user']);
+      final response = await apiService.login(username, password);
+      // Assuming the user data is in response['user']
+      // final user = User.fromJson(response['user']);
       _controller.add(AuthenticationStatus.authenticated);
     } catch (e) {
       _controller.add(AuthenticationStatus.unauthenticated);
     }
   }
 
-  Future<void> register({required String username, required String email, required String password}) async {
+  Future<void> register({
+    required String username,
+    required String email,
+    required String password,
+  }) async {
     try {
-      final response = await _apiService.register(username, email, password);
-      _user = User.fromJson(response['user']);
+      await apiService.register(username, email, password);
       _controller.add(AuthenticationStatus.authenticated);
     } catch (e) {
-      // Handle registration failure, maybe rethrow a specific exception
-      throw Exception('Registration failed');
+      _controller.add(AuthenticationStatus.unauthenticated);
     }
   }
 
-  void logOut() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('jwt');
-    _user = null;
+  void logOut() {
+    apiService.logout();
     _controller.add(AuthenticationStatus.unauthenticated);
   }
-
-  User? get currentUser => _user;
 
   void dispose() => _controller.close();
 }
@@ -212,7 +252,58 @@ Create a new directory `lib/register/bloc`. Inside, create the following files. 
       const Email.pure() : super.pure('');
       const Email.dirty([super.value = '']) : super.dirty();
 
-      static final _emailRegExp = RegExp(r'^[a-zA-Z0-9.!#$%&\'\'*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*$');
+      static final _emailRegExp =
+          RegExp(r'^[a-zA-Z0-9.!#$%&\'\'*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*
+
+By following these steps, you will have a complete login and registration flow integrated with your Strapi backend and managed correctly with the BLoC pattern.
+
+## 5. Future Implementation: Managing User Preferences
+
+For non-sensitive data like theme preferences, you can create a separate service that uses `shared_preferences`. This keeps the concerns of authentication and user preferences separate.
+
+Here is an example of how you might implement a `PreferencesService`.
+
+**a. Create a Preferences Service:**
+
+Create a new file `lib/services/preferences_service.dart`.
+
+```dart
+// lib/services/preferences_service.dart
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+class PreferencesService {
+  static const _themeKey = 'theme_mode';
+
+  Future<void> saveThemeMode(ThemeMode themeMode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_themeKey, themeMode.name);
+  }
+
+  Future<ThemeMode> getThemeMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    final themeName = prefs.getString(_themeKey);
+    return ThemeMode.values.firstWhere(
+      (e) => e.name == themeName,
+      orElse: () => ThemeMode.system, // Default theme
+    );
+  }
+}
+```
+
+**b. Using the Service:**
+
+You can then provide and use this service throughout your application to manage the theme.
+
+```dart
+// Example of saving the theme
+final preferencesService = PreferencesService();
+await preferencesService.saveThemeMode(ThemeMode.dark);
+
+// Example of loading the theme when the app starts
+final initialTheme = await preferencesService.getThemeMode();
+// Use this value to set the initial theme in your MaterialApp
+```);
 
       @override
       EmailValidationError? validator(String? value) {
@@ -321,7 +412,8 @@ Create a new directory `lib/register/bloc`. Inside, create the following files. 
 
       final AuthenticationRepository _authenticationRepository;
 
-      void _onUsernameChanged(RegisterUsernameChanged event, Emitter<RegisterState> emit) {
+      void _onUsernameChanged(
+          RegisterUsernameChanged event, Emitter<RegisterState> emit) {
         final username = Username.dirty(event.username);
         emit(state.copyWith(
           username: username,
@@ -337,7 +429,8 @@ Create a new directory `lib/register/bloc`. Inside, create the following files. 
         ));
       }
 
-      void _onPasswordChanged(RegisterPasswordChanged event, Emitter<RegisterState> emit) {
+      void _onPasswordChanged(
+          RegisterPasswordChanged event, Emitter<RegisterState> emit) {
         final password = Password.dirty(event.password);
         emit(state.copyWith(
           password: password,
@@ -345,7 +438,8 @@ Create a new directory `lib/register/bloc`. Inside, create the following files. 
         ));
       }
 
-      Future<void> _onSubmitted(RegisterSubmitted event, Emitter<RegisterState> emit) async {
+      Future<void> _onSubmitted(
+          RegisterSubmitted event, Emitter<RegisterState> emit) async {
         if (state.isValid) {
           emit(state.copyWith(status: FormzSubmissionStatus.inProgress));
           try {
@@ -373,6 +467,8 @@ Create a new directory `lib/register/view` and add the following files.
     import 'package:flutter/material.dart';
     import 'package:flutter_bloc/flutter_bloc.dart';
     import 'package:flutter_login/register/register.dart';
+    import 'package:flutter_login/register/bloc/register_bloc.dart';
+    import 'package:flutter_login/register/view/register_form.dart';
 
     class RegisterPage extends StatelessWidget {
       const RegisterPage({super.key});
@@ -403,7 +499,7 @@ Create a new directory `lib/register/view` and add the following files.
     ```dart
     import 'package:flutter/material.dart';
     import 'package:flutter_bloc/flutter_bloc.dart';
-    import 'package:flutter_login/register/register.dart';
+    import 'package:flutter_login/register/bloc/register_bloc.dart';
     import 'package:formz/formz.dart';
 
     class RegisterForm extends StatelessWidget {
@@ -439,8 +535,88 @@ Create a new directory `lib/register/view` and add the following files.
         );
       }
     }
-    // ... Implement _UsernameInput, _EmailInput, _PasswordInput, and _RegisterButton widgets
-    // similar to the ones in lib/login/view/login_form.dart, but connected to the RegisterBloc.
+
+    class _UsernameInput extends StatelessWidget {
+      @override
+      Widget build(BuildContext context) {
+        return BlocBuilder<RegisterBloc, RegisterState>(
+          buildWhen: (previous, current) => previous.username != current.username,
+          builder: (context, state) {
+            return TextField(
+              key: const Key('registerForm_usernameInput_textField'),
+              onChanged: (username) =>
+                  context.read<RegisterBloc>().add(RegisterUsernameChanged(username)),
+              decoration: InputDecoration(
+                labelText: 'username',
+                errorText: state.username.displayError != null ? 'invalid username' : null,
+              ),
+            );
+          },
+        );
+      }
+    }
+
+    class _EmailInput extends StatelessWidget {
+      @override
+      Widget build(BuildContext context) {
+        return BlocBuilder<RegisterBloc, RegisterState>(
+          buildWhen: (previous, current) => previous.email != current.email,
+          builder: (context, state) {
+            return TextField(
+              key: const Key('registerForm_emailInput_textField'),
+              onChanged: (email) =>
+                  context.read<RegisterBloc>().add(RegisterEmailChanged(email)),
+              decoration: InputDecoration(
+                labelText: 'email',
+                errorText: state.email.displayError != null ? 'invalid email' : null,
+              ),
+            );
+          },
+        );
+      }
+    }
+
+    class _PasswordInput extends StatelessWidget {
+      @override
+      Widget build(BuildContext context) {
+        return BlocBuilder<RegisterBloc, RegisterState>(
+          buildWhen: (previous, current) => previous.password != current.password,
+          builder: (context, state) {
+            return TextField(
+              key: const Key('registerForm_passwordInput_textField'),
+              onChanged: (password) =>
+                  context.read<RegisterBloc>().add(RegisterPasswordChanged(password)),
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: 'password',
+                errorText: state.password.displayError != null ? 'invalid password' : null,
+              ),
+            );
+          },
+        );
+      }
+    }
+
+    class _RegisterButton extends StatelessWidget {
+      @override
+      Widget build(BuildContext context) {
+        return BlocBuilder<RegisterBloc, RegisterState>(
+          builder: (context, state) {
+            return state.status.isInProgress
+                ? const CircularProgressIndicator()
+                : ElevatedButton(
+                    key: const Key('registerForm_continue_raisedButton'),
+                    onPressed: state.isValid
+                        ? () {
+                            context.read<RegisterBloc>().add(const RegisterSubmitted());
+                          }
+                        : null,
+                    child: const Text('Register'),
+                  );
+          },
+        );
+      }
+    }
     ```
 
 **3. Update UI for Navigation:**
@@ -470,3 +646,230 @@ Finally, add a button to the `LoginForm` to allow users to navigate to the regis
     ```
 
 By following these steps, you will have a complete login and registration flow integrated with your Strapi backend and managed correctly with the BLoC pattern.
+
+## 5. Future Implementation: Managing User Preferences
+
+For non-sensitive data like theme preferences, you can create a separate service that uses `shared_preferences`. This keeps the concerns of authentication and user preferences separate.
+
+Here is an example of how you might implement a `PreferencesService`.
+
+**a. Create a Preferences Service:**
+
+Create a new file `lib/services/preferences_service.dart`.
+
+```dart
+// lib/services/preferences_service.dart
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+class PreferencesService {
+  static const _themeKey = 'theme_mode';
+
+  Future<void> saveThemeMode(ThemeMode themeMode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_themeKey, themeMode.name);
+  }
+
+  Future<ThemeMode> getThemeMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    final themeName = prefs.getString(_themeKey);
+    return ThemeMode.values.firstWhere(
+      (e) => e.name == themeName,
+      orElse: () => ThemeMode.system, // Default theme
+    );
+  }
+}
+```
+
+**b. Using the Service:**
+
+You can then provide and use this service throughout your application to manage the theme.
+
+```dart
+// Example of saving the theme
+final preferencesService = PreferencesService();
+await preferencesService.saveThemeMode(ThemeMode.dark);
+
+// Example of loading the theme when the app starts
+final initialTheme = await preferencesService.getThemeMode();
+// Use this value to set the initial theme in your MaterialApp
+```
+
+current
+lib
+├── app.dart
+├── auth
+│   ├── auth.dart
+│   └── bloc
+│       ├── auth_bloc.dart
+│       ├── auth_event.dart
+│       └── auth_state.dart
+├── home
+│   ├── home.dart
+│   └── view
+│       └── home_page.dart
+├── login
+│   ├── bloc
+│   │   ├── login_bloc.dart
+│   │   ├── login_event.dart
+│   │   └── login_state.dart
+│   ├── login.dart
+│   ├── models
+│   │   ├── models.dart
+│   │   ├── password.dart
+│   │   └── username.dart
+│   └── view
+│       ├── login_form.dart
+│       ├── login_page.dart
+│       └── view.dart
+├── main.dart
+├── register
+│   ├── bloc
+│   │   ├── register_bloc.dart
+│   │   ├── register_event.dart
+│   │   └── register_state.dart
+│   ├── models
+│   │   └── email.dart
+│   ├── register.dart
+│   └── view
+│       ├── register_form.dart
+│       └── register_page.dart
+├── services
+│   └── api_service.dart
+└── splash
+    ├── splash.dart
+    └── view
+        └── splash_page.dart
+
+.packages
+├── auth_repo
+│   ├── lib
+│   │   ├── auth_repo.dart
+│   │   └── src
+│   │       └── auth_repo.dart
+│   ├── pubspec.lock
+│   └── pubspec.yaml
+└── user_repo
+    ├── lib
+    │   ├── src
+    │   │   ├── models
+    │   │   │   ├── models.dart
+    │   │   │   └── user.dart
+    │   │   └── user_repo.dart
+    │   └── user_repo.dart
+    ├── pubspec.lock
+    └── pubspec.yaml
+
+i need lib/services/api_services.dart imported in packages/user_repo/src/user_repo.dart what is the proper way to do this? should services also be a package?
+
+contents of api_services.dart
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+class ApiService {
+  final String _baseUrl;
+
+  ApiService() : _baseUrl = _getStrapiBaseUrl();
+
+  static String _getStrapiBaseUrl() {
+    final url = dotenv.env['STRAPI_URL'];
+    if (url == null || url.isEmpty) {
+      throw Exception('STRAPI_URL is not defined in the .env file or is empty.');
+    }
+    return url;
+  }
+  final _storage = const FlutterSecureStorage();
+
+  // User Login
+  Future<Map<String, dynamic>> login(String identifier, String password) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/auth/local'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({'identifier': identifier, 'password': password}),
+    );
+
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      await _storage.write(key: 'jwt', value: data['jwt']);
+      return data;
+    } else {
+      throw Exception('Failed to log in');
+    }
+  }
+
+  // User Registration
+  Future<Map<String, dynamic>> register(
+      String username, String email, String password) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/auth/local/register'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({
+        'username': username,
+        'email': email,
+        'password': password,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      await _storage.write(key: 'jwt', value: data['jwt']);
+      return data;
+    } else {
+      throw Exception('Failed to register');
+    }
+  }
+
+  Future<void> logout() async {
+    await _storage.delete(key: 'jwt');
+  }
+
+  Future<String?> getToken() async {
+    return await _storage.read(key: 'jwt');
+  }
+}
+
+
+contents of packages/user_repo/src/user_repo.dart
+// packages/user_repo/lib/src/user_repo.dart
+import 'dart:async';
+import 'package:user_repo/src/models/models.dart';
+import 'package:flutter_login/services/api_service.dart'; // Import the ApiService
+
+class UserRepository {
+  UserRepository({required this.apiService}); // Add ApiService as a dependency
+
+  final ApiService apiService; // Store the ApiService instance
+  User? _user; // Keep track of the current user
+
+  /// Retrieves the current user from the backend.
+  /// If a user is already cached, it returns the cached user.
+  /// Otherwise, it fetches the user data from Strapi using the ApiService.
+  Future<User?> getUser() async {
+    if (_user != null) return _user;
+
+    try {
+      final token = await apiService.getToken();
+      if (token == null) {
+        // No token, no authenticated user
+        _user = User.empty; // Set to empty user or null as per your app's logic
+        return _user;
+      }
+
+      final userData = await apiService.fetchLoggedInUser(); // Assuming a new method in ApiService
+      _user = User.fromJson(userData);
+      return _user;
+    } catch (e) {
+      // Handle error, e.g., token expired, network issue
+      print('Error fetching user: $e');
+      _user = User.empty; // Or set to null to indicate no user
+      return _user;
+    }
+  }
+
+  /// Clears the cached user.
+  void clearUser() {
+    _user = null;
+  }
+}

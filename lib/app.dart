@@ -9,6 +9,8 @@ import 'package:auth_repo/auth_repo.dart';
 import 'package:user_repo/user_repo.dart';
 
 
+import 'package:api_service/api_service.dart';
+
 class App extends StatelessWidget {
   const App({super.key});
 
@@ -16,10 +18,14 @@ class App extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiRepositoryProvider(
       providers: [
-        RepositoryProvider(create: (_) => AuthenticationRepository(),
-        dispose: (repository) => repository.dispose(),
+        RepositoryProvider(create: (_) => ApiService()),
+        RepositoryProvider(
+          create: (context) => AuthenticationRepository(
+            apiService: context.read<ApiService>(),
+          ),
+          dispose: (repository) => repository.dispose(),
         ),
-        RepositoryProvider(create: (_) => UserRepository()),
+        RepositoryProvider(create: (_) => UserRepository(apiService: context.read<ApiService>(),)),
       ],
       child: BlocProvider(
         lazy: false,

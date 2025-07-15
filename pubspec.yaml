@@ -20,6 +20,12 @@ dependencies:
   equatable: ^2.0.0
   flutter:
     sdk: flutter
+  api_service:
+    path: packages/api_service
+  flutter_dotenv:  ^5.1.0
+  #http: ^1.4.0
+  #flutter_secure_storage: ^9.1.1
+  shared_preferences: ^2.2.3
   flutter_bloc: ^9.1.0
   formz: ^0.8.0
   user_repo:

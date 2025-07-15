@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_login/login/bloc/login_bloc.dart';
+import 'package:flutter_login/register/view/register_page.dart';
 import 'package:formz/formz.dart';
 
 class LoginForm extends StatelessWidget {
@@ -15,7 +16,7 @@ class LoginForm extends StatelessWidget {
             ..hideCurrentSnackBar()
             ..showSnackBar(
               const SnackBar(content: Text('Authentication Failure')),
-          );
+            );
         }
       },
       child: Align(
@@ -28,6 +29,8 @@ class LoginForm extends StatelessWidget {
             _PasswordInput(),
             const Padding(padding: EdgeInsets.all(12)),
             _LoginButton(),
+            const Padding(padding: EdgeInsets.all(12)),
+            _RegisterAccountButton(),
           ],
         ),
       ),
@@ -92,6 +95,17 @@ class _LoginButton extends StatelessWidget {
       onPressed: isValid
         ? () => context.read<LoginBloc>().add(const LoginSubmitted()) : null,
       child: const Text('Login'),
+    );
+  }
+}
+
+class _RegisterAccountButton extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return TextButton(
+      key: const Key('loginForm_createAccount_flatButton'),
+      onPressed: () => Navigator.of(context).push(RegisterPage.route()),
+      child: const Text('Create an Account'),
     );
   }
 }

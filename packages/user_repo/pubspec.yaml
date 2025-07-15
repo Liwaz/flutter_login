@@ -8,3 +8,5 @@ environment:
 dependencies:
   equatable: ^2.0.0
   uuid: ^4.5.0
+  api_service:
+    path: ../api_service
